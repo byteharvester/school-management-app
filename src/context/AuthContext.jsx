@@ -1,31 +1,41 @@
-// src/context/AuthContext.jsx
-import { createContext, useContext, useEffect, useState } from 'react';
-import { getUserRole } from '../api/endpoints';
+import React, { createContext, useState, useEffect } from 'react';
+import { gasApi } from '../api/gasApi';
 
-const AuthContext = createContext();
+export const AuthContext = createContext();
 
-export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
+export const AuthProvider = ({ children }) => {
+  const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Check if a user is already logged in when the app loads
   useEffect(() => {
-    getUserRole()
-      .then((data) => {
-        setUser(data);
-        setLoading(false);
-      })
-      .catch(() => {
-        setUser({ role: 'Blocked' });
-        setLoading(false);
-      });
+    const savedUser = localStorage.getItem('beed_user');
+    if (savedUser) {
+      setCurrentUser(JSON.parse(savedUser));
+    }
+    setLoading(false);
   }, []);
 
+  const login = async (email) => {
+    try {
+      // We use the existing getStaffProfile API to verify the email exists in your Google Sheet
+      const profile = await gasApi('getStaffProfile', { email });
+      setCurrentUser(profile);
+      localStorage.setItem('beed_user', JSON.stringify(profile));
+      return { success: true };
+    } catch (error) {
+      return { success: false, message: error.message };
+    }
+  };
+
+  const logout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('beed_user');
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading }}>
+    <AuthContext.Provider value={{ currentUser, login, logout, loading }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export const useAuth = () => useContext(AuthContext);
-
+};

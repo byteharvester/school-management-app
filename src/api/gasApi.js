@@ -1,4 +1,4 @@
-const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyZ3sJTzV239anLmkc32wvxmnlf0xViFH3u5s2DdOofKl_okKe5v0ooU6vucHD9vqMf/exec'; // Replace after clasp deploy
+const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbzwhglcsEj1yOo-JFNpFAvIPLRJTo2kErpLo27n1rFwacI2B-YyQGzLSb-YkKvX2kiJ/exec'; // Replace after clasp deploy
 
 export const gasApi = async (action, payload = {}) => {
   const response = await fetch(GAS_WEB_APP_URL, {

@@ -2,9 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { gasApi } from '../../api/gasApi';
 import Swal from 'sweetalert2';
 
+// FIX 1: Safely strip the "data:image/..." prefix so Google Apps Script doesn't crash
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
-  const reader = new FileReader(); reader.readAsDataURL(file);
-  reader.onload = () => resolve(reader.result); reader.onerror = error => reject(error);
+  const reader = new FileReader(); 
+  reader.readAsDataURL(file);
+  reader.onload = () => {
+    // Split the string and only send the raw base64 data to the backend
+    const base64Data = reader.result.split(',')[1];
+    resolve(base64Data);
+  }; 
+  reader.onerror = error => reject(error);
 });
 
 const extractId = (url) => {
@@ -18,16 +25,24 @@ export default function MedicalDeskModal({ studentName, onClose }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
-  const [isSubmitting, setIsSubmitting] = useState(false); // <-- Anti-double-click lock
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [editForms, setEditForms] = useState({});
   const [files, setFiles] = useState({});
   
   const [showMarForm, setShowMarForm] = useState(null);
-  const [marForm, setMarForm] = useState({
-    medicineName: '', dose: '', frequency: 'Twice Daily', duration: '3', 
-    startDate: new Date().toISOString().split('T')[0], instructions: ''
-  });
+  
+  // NEW: Dynamic list to hold MULTIPLE medicines at once!
+  const defaultMedicine = { 
+    medicineName: '', 
+    type: 'Tablet', // Added type for better UX
+    dose: '', 
+    frequency: 'Twice Daily', 
+    duration: '3', 
+    instructions: '' 
+  };
+  
+  const [marList, setMarList] = useState([{ ...defaultMedicine, startDate: new Date().toISOString().split('T')[0] }]);
 
   const fetchRecords = async () => {
     setLoading(true);
@@ -63,6 +78,25 @@ export default function MedicalDeskModal({ studentName, onClose }) {
     setFiles({ ...files, [`${incidentId}_${type}`]: file });
   };
 
+  // --- MULTI-MEDICINE HANDLERS ---
+  const updateMarItem = (index, field, value) => {
+    const updatedList = [...marList];
+    updatedList[index][field] = value;
+    setMarList(updatedList);
+  };
+
+  const addMarItem = () => {
+    // Inherit the start date from the first item to save clicks
+    const sharedStartDate = marList[0]?.startDate || new Date().toISOString().split('T')[0];
+    setMarList([...marList, { ...defaultMedicine, startDate: sharedStartDate }]);
+  };
+
+  const removeMarItem = (index) => {
+    const updatedList = marList.filter((_, i) => i !== index);
+    setMarList(updatedList);
+  };
+  // -------------------------------
+
   const handleUpdateRecord = async (incidentId) => {
     setSavingId(incidentId);
     Swal.fire({ title: 'Saving...', text: 'Updating medical database & uploads.', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
@@ -85,41 +119,60 @@ export default function MedicalDeskModal({ studentName, onClose }) {
       if (formData.status === 'Recovered') onClose();
       else fetchRecords();
     } catch (error) {
-      Swal.fire('Error', 'Failed to update record.', 'error');
+      // FIX 2: Actually display the backend error message!
+      Swal.fire('Upload Error', error.message || 'Failed to update record.', 'error');
     } finally { setSavingId(null); }
   };
 
   const handleAddPrescription = async (incidentId) => {
-    if (isSubmitting) return; // Prevent double execution
+    if (isSubmitting) return; 
     
-    if (!marForm.medicineName || !marForm.dose) {
-      return Swal.fire('Missing Info', 'Please enter at least the Medicine Name and Dose.', 'warning');
+    // Validate all items
+    if (marList.some(med => !med.medicineName || !med.dose)) {
+      return Swal.fire('Missing Info', 'Please ensure all added medicines have a Name and Dose.', 'warning');
     }
 
     setIsSubmitting(true);
-    Swal.fire({ title: 'Generating Schedule...', text: 'Calculating all doses based on frequency and duration.', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    Swal.fire({ 
+      title: 'Generating Schedules...', 
+      text: `Processing ${marList.length} medicine${marList.length > 1 ? 's' : ''}. Please wait...`, 
+      allowOutsideClick: false, 
+      didOpen: () => Swal.showLoading() 
+    });
     
     try {
-      const startD = new Date(marForm.startDate);
-      const endD = new Date(startD);
-      endD.setDate(startD.getDate() + parseInt(marForm.duration) - 1);
-      const endDateStr = endD.toISOString().split('T')[0];
+      // Loop sequentially so we don't overwhelm the Google Apps Script API limits
+      for (let i = 0; i < marList.length; i++) {
+        const med = marList[i];
+        
+        const startD = new Date(med.startDate);
+        const endD = new Date(startD);
+        endD.setDate(startD.getDate() + parseInt(med.duration) - 1);
+        const endDateStr = endD.toISOString().split('T')[0];
 
-      await gasApi('addPrescription', { 
-        ...marForm, 
-        endDate: endDateStr, 
-        instructions: marForm.instructions || "No special instructions", 
-        incidentId, 
-        studentName 
-      });
+        // Combine the Type and Name beautifully for the backend (e.g., "Paracetamol (Tablet)")
+        const combinedName = `${med.medicineName} (${med.type})`;
+
+        await gasApi('addPrescription', { 
+          medicineName: combinedName,
+          dose: med.dose,
+          frequency: med.frequency,
+          duration: med.duration,
+          startDate: med.startDate,
+          endDate: endDateStr, 
+          instructions: med.instructions || "No special instructions", 
+          incidentId, 
+          studentName 
+        });
+      }
       
-      Swal.fire({ title: 'MAR Generated!', text: 'The medicine schedule has been created and added to the dashboard.', icon: 'success' });
+      Swal.fire({ title: 'MAR Generated!', text: `Successfully scheduled ${marList.length} medicines.`, icon: 'success' });
       setShowMarForm(null); 
-      setMarForm({ medicineName: '', dose: '', frequency: 'Twice Daily', duration: '3', startDate: new Date().toISOString().split('T')[0], instructions: '' });
+      setMarList([{ ...defaultMedicine, startDate: new Date().toISOString().split('T')[0] }]); // Reset
     } catch (err) {
       Swal.fire('Error', err.message || 'Failed to generate MAR schedule.', 'error');
     } finally {
-      setIsSubmitting(false); // Release the lock
+      setIsSubmitting(false);
     }
   };
 
@@ -133,7 +186,7 @@ export default function MedicalDeskModal({ studentName, onClose }) {
 
   return (
     <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[200] flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-slate-50 rounded-3xl w-full max-w-3xl shadow-2xl overflow-hidden my-auto relative border border-slate-200">
+      <div className="bg-slate-50 rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden my-auto relative border border-slate-200">
         
         <div className="bg-slate-900 p-5 flex justify-between items-center sticky top-0 z-10">
           <div>
@@ -190,58 +243,95 @@ export default function MedicalDeskModal({ studentName, onClose }) {
                           </div>
                         </div>
 
-                        <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-4">
-                          <div className="flex justify-between items-center mb-3">
-                            <h4 className="font-black text-blue-900 text-sm"><i className="fa-solid fa-pills mr-1"></i> MAR Schedule Generator</h4>
+                        {/* ==================================================== */}
+                        {/* MULTI-MEDICINE GENERATOR UI                          */}
+                        {/* ==================================================== */}
+                        <div className="bg-blue-50/50 border border-blue-200 rounded-2xl overflow-hidden">
+                          <div className="flex justify-between items-center p-4 bg-blue-100/50 border-b border-blue-100">
+                            <h4 className="font-black text-blue-900 text-sm"><i className="fa-solid fa-pills mr-1 text-blue-600"></i> Full Prescription Generator</h4>
                             <button onClick={() => setShowMarForm(showMarForm === record['Incident ID'] ? null : record['Incident ID'])} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm">
-                              {showMarForm === record['Incident ID'] ? 'Cancel' : '+ Add Prescription'}
+                              {showMarForm === record['Incident ID'] ? 'Cancel' : '+ Add Medications'}
                             </button>
                           </div>
 
                           {showMarForm === record['Incident ID'] && (
-                            <div className="bg-white p-3 rounded-lg border border-blue-200 shadow-inner grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 animate-fade-in">
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Medicine Name</label>
-                                <input type="text" value={marForm.medicineName} onChange={e => setMarForm({...marForm, medicineName: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500" placeholder="e.g. Paracetamol 500mg" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Dose</label>
-                                <input type="text" value={marForm.dose} onChange={e => setMarForm({...marForm, dose: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500" placeholder="e.g. 1 Tablet, 5ml" />
-                              </div>
-                              <div>
-                                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Frequency</label>
-                                <select value={marForm.frequency} onChange={e => setMarForm({...marForm, frequency: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500">
-                                  <option value="Once Daily (Morning)">Once Daily (Morning)</option>
-                                  <option value="Once Daily (Night)">Once Daily (Night)</option>
-                                  <option value="Twice Daily">Twice Daily (Morning & Night)</option>
-                                  <option value="Three Times Daily">Three Times Daily</option>
-                                  <option value="Every 6 Hours">Every 6 Hours</option>
-                                </select>
-                              </div>
-                              <div className="flex gap-2">
-                                <div className="flex-1">
-                                  <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Duration (Days)</label>
-                                  <input type="number" min="1" value={marForm.duration} onChange={e => setMarForm({...marForm, duration: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500" />
+                            <div className="p-4 space-y-4 animate-fade-in bg-white">
+                              {marList.map((med, index) => (
+                                <div key={index} className="relative bg-slate-50 border border-slate-200 p-4 rounded-xl shadow-sm">
+                                  
+                                  {marList.length > 1 && (
+                                    <button onClick={() => removeMarItem(index)} className="absolute -top-2 -right-2 w-6 h-6 bg-rose-500 hover:bg-rose-600 text-white rounded-full flex items-center justify-center shadow text-xs">
+                                      <i className="fa-solid fa-xmark"></i>
+                                    </button>
+                                  )}
+
+                                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                                    <div className="md:col-span-3">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Type</label>
+                                      <select value={med.type} onChange={e => updateMarItem(index, 'type', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white">
+                                        <option value="Tablet">💊 Tablet</option>
+                                        <option value="Capsule">💊 Capsule</option>
+                                        <option value="Syrup">🥄 Syrup</option>
+                                        <option value="Drops">💧 Drops (Eye/Ear)</option>
+                                        <option value="Cream/Ointment">🧴 Cream/Ointment</option>
+                                        <option value="Powder">💨 Powder</option>
+                                        <option value="Injection">💉 Injection</option>
+                                        <option value="Other">Other</option>
+                                      </select>
+                                    </div>
+                                    <div className="md:col-span-6">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Medicine Name</label>
+                                      <input type="text" value={med.medicineName} onChange={e => updateMarItem(index, 'medicineName', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white" placeholder="e.g. Paracetamol 500mg" />
+                                    </div>
+                                    <div className="md:col-span-3">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Dose</label>
+                                      <input type="text" value={med.dose} onChange={e => updateMarItem(index, 'dose', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white" placeholder="e.g. 1 Tab, 5ml, 2 Drops" />
+                                    </div>
+                                    
+                                    <div className="md:col-span-4">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Frequency</label>
+                                      <select value={med.frequency} onChange={e => updateMarItem(index, 'frequency', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white">
+                                        <option value="Once Daily (Morning)">Once Daily (Morning)</option>
+                                        <option value="Once Daily (Night)">Once Daily (Night)</option>
+                                        <option value="Twice Daily">Twice Daily (Morning & Night)</option>
+                                        <option value="Three Times Daily">Three Times Daily</option>
+                                        <option value="Every 6 Hours">Every 6 Hours</option>
+                                      </select>
+                                    </div>
+                                    <div className="md:col-span-4">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Duration (Days)</label>
+                                      <input type="number" min="1" value={med.duration} onChange={e => updateMarItem(index, 'duration', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white" />
+                                    </div>
+                                    <div className="md:col-span-4">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Start Date</label>
+                                      <input type="date" value={med.startDate} onChange={e => updateMarItem(index, 'startDate', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white" />
+                                    </div>
+
+                                    <div className="md:col-span-12">
+                                      <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Special Instructions</label>
+                                      <input type="text" value={med.instructions} onChange={e => updateMarItem(index, 'instructions', e.target.value)} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500 bg-white" placeholder="e.g. Apply externally, after meals, right ear only..." />
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="flex-1">
-                                  <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Start Date</label>
-                                  <input type="date" value={marForm.startDate} onChange={e => setMarForm({...marForm, startDate: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500" />
-                                </div>
+                              ))}
+
+                              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                                <button onClick={addMarItem} className="flex-1 border-2 border-dashed border-blue-300 hover:border-blue-500 hover:bg-blue-50 text-blue-600 font-black py-2.5 rounded-xl transition text-sm">
+                                  <i className="fa-solid fa-plus mr-1"></i> Add Another Medicine
+                                </button>
+                                <button 
+                                  onClick={() => handleAddPrescription(record['Incident ID'])} 
+                                  disabled={isSubmitting} 
+                                  className="flex-1 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white font-black py-2.5 rounded-xl shadow transition text-sm"
+                                >
+                                  <i className="fa-solid fa-wand-magic-sparkles mr-1"></i> 
+                                  {isSubmitting ? 'Generating...' : `Save ${marList.length} Medicine Schedule${marList.length > 1 ? 's' : ''}`}
+                                </button>
                               </div>
-                              <div className="md:col-span-2">
-                                <label className="block text-[10px] font-bold text-slate-500 mb-1 uppercase">Special Instructions</label>
-                                <input type="text" value={marForm.instructions} onChange={e => setMarForm({...marForm, instructions: e.target.value})} className="w-full p-2 border border-slate-200 rounded text-sm outline-none focus:border-blue-500" placeholder="e.g. After food, empty stomach..." />
-                              </div>
-                              <button 
-                                onClick={() => handleAddPrescription(record['Incident ID'])} 
-                                disabled={isSubmitting} 
-                                className="md:col-span-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 text-white font-black py-2 rounded shadow transition mt-1"
-                              >
-                                <i className="fa-solid fa-wand-magic-sparkles mr-1"></i> {isSubmitting ? 'Generating Schedule...' : 'Generate Automated Schedule'}
-                              </button>
                             </div>
                           )}
                         </div>
+                        {/* ==================================================== */}
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-indigo-50 p-3 rounded-xl border border-indigo-100">
                           <div>

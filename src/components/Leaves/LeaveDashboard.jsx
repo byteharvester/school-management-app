@@ -1,193 +1,298 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { gasApi } from '../../api/gasApi';
+import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { AuthContext } from '../../context/AuthContext';
+import { gasApi } from '../../api/gasApi';
+import Swal from 'sweetalert2';
+
+// --- Utility: File to Base64 ---
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.readAsDataURL(file);
+  reader.onload = () => {
+    const base64Data = reader.result.split(',')[1];
+    resolve(base64Data);
+  };
+  reader.onerror = (error) => reject(error);
+});
 
 export default function LeaveDashboard() {
-  const { currentUser } = useContext(AuthContext); // Get the logged-in user
-  const [leaves, setLeaves] = useState([]);
+  const { currentUser } = useContext(AuthContext);
   const [loading, setLoading] = useState(true);
   
-  // Modal State
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // --- States ---
+  const [balances, setBalances] = useState({ CL_Balance: 0, EL_Balance: 0, HPL_Balance: 0 });
+  const [rules, setRules] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [staffList, setStaffList] = useState([]); // State for the dropdown list
+  
+  const [showForm, setShowForm] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const [formData, setFormData] = useState({
-    leaveType: 'Casual Leave',
-    fromDate: '',
-    toDate: '',
-    reason: ''
+    leaveType: '',
+    startDate: '',
+    endDate: '',
+    reason: '',
+    chargeHandedTo: '',
+    medicalCertFile: null
   });
 
-  const fetchLeaves = () => {
+  const fetchData = async () => {
+    if (!currentUser) return;
     setLoading(true);
-    gasApi('getLeaves')
-      .then(setLeaves)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchLeaves();
-  }, []);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-    
     try {
-      const payload = {
-        email: currentUser.Email, // Dynamically use the logged-in staff's email
-        leaveType: formData.leaveType,
-        fromDate: formData.fromDate,
-        toDate: formData.toDate,
-        reason: formData.reason
-      };
-      
-      await gasApi('applyLeave', payload);
+      // Send the Name (and Email) to the backend instead of the numeric ID
+      const [balData, rulesData, historyData, staffData] = await Promise.all([
+        gasApi('getLeaveBalances', { 
+          employeeName: currentUser.Name, 
+          employeeEmail: currentUser.Email 
+        }),
+        gasApi('getLeaveRules'),
+        gasApi('getLeaves'),
+        gasApi('getStaffList') 
+      ]);
 
-      // ADD THIS ALERT!
-      alert("Leave request submitted successfully!");
+      if (balData) setBalances(balData);
+      setRules(rulesData || []);
+      setStaffList(staffData || []); // Save the staff list
       
-      // Reset form and close modal
-      setIsModalOpen(false);
-      setFormData({ leaveType: 'Casual Leave', fromDate: '', toDate: '', reason: '' });
-      
-      // Refresh the table to show the new request
-      fetchLeaves();
+      // Filter history strictly by Name match
+      const myLeaves = (historyData || []).filter(
+        app => String(app.EmployeeName).trim() === String(currentUser.Name).trim()
+      );
+      setHistory(myLeaves);
     } catch (error) {
-      alert("Failed to submit leave: " + error.message);
+      Swal.fire('Error', 'Failed to load leave data.', 'error');
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
 
-  // Filter leaves so staff only see their own requests
-  const myLeaves = leaves.filter(leave => 
-    String(leave['Staff_Email']).toLowerCase() === String(currentUser.Email).toLowerCase()
-  );
+  useEffect(() => {
+    fetchData();
+  }, [currentUser]);
+
+  const activeRule = useMemo(() => {
+    return rules.find(r => r.LeaveCode === formData.leaveType) || null;
+  }, [formData.leaveType, rules]);
+
+  const totalDays = useMemo(() => {
+    if (!formData.startDate || !formData.endDate) return 0;
+    const start = new Date(formData.startDate);
+    const end = new Date(formData.endDate);
+    if (end < start) return 0;
+    return Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) + 1;
+  }, [formData.startDate, formData.endDate]);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (activeRule?.MaxContinuousDays && totalDays > parseInt(activeRule.MaxContinuousDays, 10)) {
+      return Swal.fire('Rule Violation', `Maximum allowed continuous days for this leave is ${activeRule.MaxContinuousDays}.`, 'error');
+    }
+    if (activeRule?.RequiresMedicalCert === 'Yes' && !formData.medicalCertFile) {
+      return Swal.fire('Required', 'A Medical Certificate is mandatory for this leave type.', 'warning');
+    }
+    if (activeRule?.RequiresChargeHandover === 'Yes' && !formData.chargeHandedTo.trim()) {
+      return Swal.fire('Required', 'Charge Handover is mandatory for this leave type.', 'warning');
+    }
+
+    setIsSubmitting(true);
+    Swal.fire({ title: 'Submitting...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+
+    try {
+      let medicalCertBase64 = null;
+      if (formData.medicalCertFile) {
+        medicalCertBase64 = await fileToBase64(formData.medicalCertFile);
+      }
+
+      await gasApi('applyLeave', {
+        employeeId: currentUser?.Email || 'N/A', // Using Email as the permanent ID
+        employeeName: currentUser?.Name,
+        leaveType: formData.leaveType,
+        startDate: formData.startDate,
+        endDate: formData.endDate,
+        totalDays: totalDays,
+        reason: formData.reason,
+        chargeHandedTo: formData.chargeHandedTo || 'N/A',
+        medicalCertFile: medicalCertBase64
+      });
+
+      Swal.fire('Success', 'Leave application submitted successfully.', 'success');
+      setShowForm(false);
+      setFormData({ leaveType: '', startDate: '', endDate: '', reason: '', chargeHandedTo: '', medicalCertFile: null });
+      fetchData();
+    } catch (err) {
+      Swal.fire('Error', err.message || 'Submission failed.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="flex justify-center items-center h-screen bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div></div>;
+  }
 
   return (
-    <div className="p-6 bg-slate-50 min-h-screen">
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-slate-800">My Leave Requests</h2>
-        <button 
-          onClick={() => setIsModalOpen(true)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-bold transition shadow-sm flex items-center gap-2"
-        >
-          <i className="fa-solid fa-plus"></i> Apply for Leave
-        </button>
-      </div>
-
-      {loading ? (
-        <div className="text-center py-10 text-slate-500">Loading leaves...</div>
-      ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-slate-800 text-white text-sm uppercase tracking-wider">
-              <tr>
-                <th className="p-4">Type</th>
-                <th className="p-4">From</th>
-                <th className="p-4">To</th>
-                <th className="p-4">Reason</th>
-                <th className="p-4">Status</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm text-slate-700">
-              {myLeaves.length === 0 ? (
-                <tr><td colSpan="5" className="p-6 text-center text-slate-400">You have no leave history.</td></tr>
-              ) : (
-                myLeaves.map((leave, idx) => (
-                  <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50 transition">
-                    <td className="p-4 font-bold">{leave['Leave_Type']}</td>
-                    <td className="p-4">{new Date(leave['From_Date']).toLocaleDateString()}</td>
-                    <td className="p-4">{new Date(leave['To_Date']).toLocaleDateString()}</td>
-                    <td className="p-4 truncate max-w-xs">{leave['Reason']}</td>
-                    <td className="p-4">
-                      <span className={`px-2 py-1 rounded-md font-bold text-xs ${leave['Status'] === 'Pending' ? 'bg-amber-100 text-amber-700' : leave['Status'] === 'Approved' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                        {leave['Status']}
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+    <div className="p-6 bg-gray-50 min-h-screen">
+      <div className="max-w-6xl mx-auto space-y-6">
+        
+        {/* Header */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-800">Leave Dashboard</h1>
+            <p className="text-sm text-gray-500">Welcome, {currentUser?.Name} ({currentUser?.Post || 'Staff'})</p>
+          </div>
+          <button 
+            onClick={() => setShowForm(!showForm)}
+            className="mt-4 md:mt-0 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg font-medium transition"
+          >
+            {showForm ? 'Cancel Application' : '+ Apply for Leave'}
+          </button>
         </div>
-      )}
 
-      {/* Application Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden p-6">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-bold text-slate-800">Leave Application</h3>
-              <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600">
-                <i className="fa-solid fa-xmark text-xl"></i>
-              </button>
-            </div>
+        {/* Balance Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-emerald-500">
+            <p className="text-sm font-semibold text-gray-500 uppercase">Casual Leave (CL)</p>
+            <p className="text-3xl font-bold text-gray-800 mt-2">{balances.CL_Balance || 0}</p>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-blue-500">
+            <p className="text-sm font-semibold text-gray-500 uppercase">Earned Leave (EL)</p>
+            <p className="text-3xl font-bold text-gray-800 mt-2">{balances.EL_Balance || 0}</p>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-amber-500">
+            <p className="text-sm font-semibold text-gray-500 uppercase">Half Pay Leave (HPL)</p>
+            <p className="text-3xl font-bold text-gray-800 mt-2">{balances.HPL_Balance || 0}</p>
+          </div>
+        </div>
 
+        {/* Application Form */}
+        {showForm && (
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+            <h2 className="text-lg font-bold text-gray-800 mb-4 border-b pb-2">New Leave Application</h2>
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Leave Type</label>
-                <select 
-                  required
-                  className="w-full p-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                  value={formData.leaveType}
-                  onChange={e => setFormData({...formData, leaveType: e.target.value})}
-                >
-                  <option value="Casual Leave">Casual Leave</option>
-                  <option value="Sick Leave">Sick Leave</option>
-                  <option value="Earned Leave">Earned Leave</option>
-                  <option value="Emergency Leave">Emergency Leave</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">From Date</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Leave Type</label>
+                  <select 
+                    required value={formData.leaveType} 
+                    onChange={(e) => setFormData({...formData, leaveType: e.target.value})}
+                    className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                  >
+                    <option value="">-- Select Type --</option>
+                    {rules.map((r, idx) => <option key={idx} value={r.LeaveCode}>{r.LeaveCode}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Reason</label>
                   <input 
-                    required 
-                    type="date" 
-                    className="w-full p-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={formData.fromDate}
-                    onChange={e => setFormData({...formData, fromDate: e.target.value})} 
+                    type="text" required value={formData.reason} 
+                    onChange={(e) => setFormData({...formData, reason: e.target.value})}
+                    placeholder="Enter reason..."
+                    className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                   />
                 </div>
+
                 <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">To Date</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
                   <input 
-                    required 
-                    type="date" 
-                    className="w-full p-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={formData.toDate}
-                    onChange={e => setFormData({...formData, toDate: e.target.value})} 
+                    type="date" required value={formData.startDate} 
+                    onChange={(e) => setFormData({...formData, startDate: e.target.value})}
+                    className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                   />
                 </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                  <input 
+                    type="date" required min={formData.startDate} value={formData.endDate} 
+                    onChange={(e) => setFormData({...formData, endDate: e.target.value})}
+                    className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+
+                {activeRule?.RequiresChargeHandover === 'Yes' && (
+                  <div className="md:col-span-2 bg-amber-50 p-4 rounded-lg border border-amber-200">
+                    <label className="block text-sm font-medium text-amber-800 mb-1">Charge Handover To (Required)</label>
+                    <select 
+                      required value={formData.chargeHandedTo} 
+                      onChange={(e) => setFormData({...formData, chargeHandedTo: e.target.value})}
+                      className="w-full p-2.5 border border-amber-300 rounded-lg outline-none bg-white focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="">-- Select Staff Member --</option>
+                      {staffList.filter(name => name !== currentUser?.Name).map((name, idx) => (
+                        <option key={idx} value={name}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {activeRule?.RequiresMedicalCert === 'Yes' && (
+                  <div className="md:col-span-2 bg-blue-50 p-4 rounded-lg border border-blue-200">
+                    <label className="block text-sm font-medium text-blue-800 mb-1">Medical Certificate (Required)</label>
+                    <input 
+                      type="file" required accept="image/*,application/pdf"
+                      onChange={(e) => setFormData({...formData, medicalCertFile: e.target.files[0]})}
+                      className="w-full p-2 bg-white border border-blue-300 rounded-lg text-sm"
+                    />
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Reason for Leave</label>
-                <textarea 
-                  required 
-                  rows="3" 
-                  placeholder="Please provide details..."
-                  className="w-full p-2 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-                  value={formData.reason}
-                  onChange={e => setFormData({...formData, reason: e.target.value})} 
-                />
-              </div>
-
-              <div className="flex gap-3 mt-6">
-                <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-2 border border-slate-300 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition">
-                  Cancel
-                </button>
-                <button type="submit" disabled={submitting} className="flex-1 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
-                  {submitting ? 'Submitting...' : 'Submit Request'}
+              <div className="flex justify-end pt-4">
+                <button type="submit" disabled={isSubmitting} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2.5 rounded-lg font-medium transition">
+                  {isSubmitting ? 'Submitting...' : 'Submit Application'}
                 </button>
               </div>
             </form>
           </div>
+        )}
+
+        {/* History Table */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="p-4 border-b border-gray-200 bg-gray-50">
+            <h2 className="text-lg font-bold text-gray-800">Leave History</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+                <tr>
+                  <th className="p-4 font-semibold">ID</th>
+                  <th className="p-4 font-semibold">Type</th>
+                  <th className="p-4 font-semibold">Dates</th>
+                  <th className="p-4 font-semibold">Days</th>
+                  <th className="p-4 font-semibold">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {history.length === 0 ? (
+                  <tr><td colSpan="5" className="p-8 text-center text-gray-500">No applications found.</td></tr>
+                ) : (
+                  history.map((record, idx) => (
+                    <tr key={idx} className="hover:bg-gray-50">
+                      <td className="p-4 font-medium">{record.ApplicationID}</td>
+                      <td className="p-4 font-bold text-indigo-600">{record.LeaveType}</td>
+                      <td className="p-4 text-gray-600">{record.StartDate} to {record.EndDate}</td>
+                      <td className="p-4">{record.TotalDays}</td>
+                      <td className="p-4">
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                          record.Status === 'Approved' ? 'bg-green-100 text-green-700' :
+                          record.Status === 'Rejected' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {record.Status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      )}
+
+      </div>
     </div>
   );
 }

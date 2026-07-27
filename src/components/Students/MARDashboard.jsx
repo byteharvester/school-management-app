@@ -84,6 +84,41 @@ export default function MARDashboard() {
     return s;
   }, [schedules]);
 
+  // Helper function to beautify the time display
+  const renderTimeWithIcon = (timeStr) => {
+    if (!timeStr) return <span className="text-slate-400">-</span>;
+    
+    let hour = 0;
+    let min = '00';
+    let isPM = false;
+
+    // Parse the time string (handles both "21:00" and "09:00 PM")
+    const timeMatch = String(timeStr).match(/(\d+):(\d+)/);
+    if (timeMatch) {
+      hour = parseInt(timeMatch[1], 10);
+      min = timeMatch[2];
+      
+      // Calculate AM/PM logic
+      if (String(timeStr).toLowerCase().includes('pm') || hour >= 12) {
+        isPM = true;
+        if (hour > 12) hour -= 12;
+      }
+      if (hour === 0) hour = 12;
+      if (String(timeStr).toLowerCase().includes('am')) isPM = false;
+    } else {
+      return <span className="text-slate-700 font-bold">{timeStr}</span>; // Fallback
+    }
+
+    const formattedHour = hour < 10 ? `0${hour}` : hour;
+    
+    return (
+      <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-black tracking-wider ${isPM ? 'bg-indigo-50 text-indigo-600 border border-indigo-100' : 'bg-amber-50 text-amber-600 border border-amber-100'}`}>
+        <i className={`fa-solid ${isPM ? 'fa-moon' : 'fa-sun text-amber-500'}`}></i>
+        <span>{`${formattedHour}:${min} ${isPM ? 'PM' : 'AM'}`}</span>
+      </div>
+    );
+  };
+
   return (
     <div className="p-4 md:p-6 bg-slate-50 min-h-screen relative">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
@@ -159,7 +194,8 @@ export default function MARDashboard() {
                   return (
                     <tr key={idx} className={`transition-colors hover:bg-slate-50 ${isGiven ? 'bg-emerald-50/30' : ''}`}>
                       <td className="p-4">
-                        <span className="bg-slate-100 text-slate-600 font-black px-3 py-1.5 rounded-lg text-xs">{row['ScheduledTime']}</span>
+                        {/* THIS IS THE UPDATED LINE! */}
+                        {renderTimeWithIcon(row['ScheduledTime'])}
                       </td>
                       <td className="p-4">
                         <p className="font-black text-slate-800">{row['StudentName']}</p>

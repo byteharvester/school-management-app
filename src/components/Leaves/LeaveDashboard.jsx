@@ -3,7 +3,6 @@ import { AuthContext } from '../../context/AuthContext';
 import { gasApi } from '../../api/gasApi';
 import Swal from 'sweetalert2';
 
-// --- Utility: File to Base64 ---
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.readAsDataURL(file);
@@ -18,34 +17,27 @@ export default function LeaveDashboard() {
   const { currentUser } = useContext(AuthContext);
   const [loading, setLoading] = useState(true);
   
-  // --- States ---
-  const [balances, setBalances] = useState({ CL_Balance: 0, EL_Balance: 0, HPL_Balance: 0 });
+  const [balances, setBalances] = useState({ 
+    CL_Balance: 0, EL_Balance: 0, HPL_Balance: 0, 
+    ML_Balance: 0, PL_Balance: 0, SCL_Balance: 0 
+  });
   const [rules, setRules] = useState([]);
   const [history, setHistory] = useState([]);
-  const [staffList, setStaffList] = useState([]); // State for the dropdown list
+  const [staffList, setStaffList] = useState([]); 
   
   const [showForm, setShowForm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [formData, setFormData] = useState({
-    leaveType: '',
-    startDate: '',
-    endDate: '',
-    reason: '',
-    chargeHandedTo: '',
-    medicalCertFile: null
+    leaveType: '', startDate: '', endDate: '', reason: '', chargeHandedTo: '', medicalCertFile: null
   });
 
   const fetchData = async () => {
     if (!currentUser) return;
     setLoading(true);
     try {
-      // Send the Name (and Email) to the backend instead of the numeric ID
       const [balData, rulesData, historyData, staffData] = await Promise.all([
-        gasApi('getLeaveBalances', { 
-          employeeName: currentUser.Name, 
-          employeeEmail: currentUser.Email 
-        }),
+        gasApi('getLeaveBalances', { employeeName: currentUser.Name, employeeEmail: currentUser.Email }),
         gasApi('getLeaveRules'),
         gasApi('getLeaves'),
         gasApi('getStaffList') 
@@ -53,9 +45,8 @@ export default function LeaveDashboard() {
 
       if (balData) setBalances(balData);
       setRules(rulesData || []);
-      setStaffList(staffData || []); // Save the staff list
+      setStaffList(staffData || []);
       
-      // Filter history strictly by Name match
       const myLeaves = (historyData || []).filter(
         app => String(app.EmployeeName).trim() === String(currentUser.Name).trim()
       );
@@ -70,6 +61,25 @@ export default function LeaveDashboard() {
   useEffect(() => {
     fetchData();
   }, [currentUser]);
+
+  // SMART FILTER: Only show leaves applicable to this specific employee's Post and Gender
+  const availableRules = useMemo(() => {
+    if (!rules || !currentUser) return [];
+    const userPost = (currentUser.Post || '').toLowerCase();
+    const userGender = (currentUser.Gender || '').toLowerCase(); // If you add Gender to Staff sheet later
+
+    return rules.filter(r => {
+      // 1. Check if the leave is restricted by Post
+      const allowedPosts = r.ApplicablePosts ? r.ApplicablePosts.toLowerCase() : 'all';
+      const isPostAllowed = allowedPosts === 'all' || allowedPosts.includes(userPost);
+
+      // 2. Check if the leave is restricted by Gender (e.g., Maternity Leave)
+      const allowedGender = r.GenderSpecific ? r.GenderSpecific.toLowerCase() : 'all';
+      const isGenderAllowed = allowedGender === 'all' || allowedGender === userGender || userGender === ''; // Defaults to allowed if gender isn't set in DB yet
+
+      return isPostAllowed && isGenderAllowed;
+    });
+  }, [rules, currentUser]);
 
   const activeRule = useMemo(() => {
     return rules.find(r => r.LeaveCode === formData.leaveType) || null;
@@ -106,7 +116,7 @@ export default function LeaveDashboard() {
       }
 
       await gasApi('applyLeave', {
-        employeeId: currentUser?.Email || 'N/A', // Using Email as the permanent ID
+        employeeId: currentUser?.Email || 'N/A', 
         employeeName: currentUser?.Name,
         leaveType: formData.leaveType,
         startDate: formData.startDate,
@@ -134,7 +144,7 @@ export default function LeaveDashboard() {
 
   return (
     <div className="p-6 bg-gray-50 min-h-screen">
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="max-w-7xl mx-auto space-y-6">
         
         {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-xl shadow-sm border border-gray-200">
@@ -150,19 +160,31 @@ export default function LeaveDashboard() {
           </button>
         </div>
 
-        {/* Balance Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-emerald-500">
-            <p className="text-sm font-semibold text-gray-500 uppercase">Casual Leave (CL)</p>
-            <p className="text-3xl font-bold text-gray-800 mt-2">{balances.CL_Balance || 0}</p>
+        {/* Extended Balance Cards Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-emerald-500">
+            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Casual (CL)</p>
+            <p className="text-2xl font-black text-gray-800 mt-1">{balances.CL_Balance || 0}</p>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-blue-500">
-            <p className="text-sm font-semibold text-gray-500 uppercase">Earned Leave (EL)</p>
-            <p className="text-3xl font-bold text-gray-800 mt-2">{balances.EL_Balance || 0}</p>
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-blue-500">
+            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Earned (EL)</p>
+            <p className="text-2xl font-black text-gray-800 mt-1">{balances.EL_Balance || 0}</p>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-amber-500">
-            <p className="text-sm font-semibold text-gray-500 uppercase">Half Pay Leave (HPL)</p>
-            <p className="text-3xl font-bold text-gray-800 mt-2">{balances.HPL_Balance || 0}</p>
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-amber-500">
+            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Half Pay (HPL)</p>
+            <p className="text-2xl font-black text-gray-800 mt-1">{balances.HPL_Balance || 0}</p>
+          </div>
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-purple-500">
+            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Spl Casual (SCL)</p>
+            <p className="text-2xl font-black text-gray-800 mt-1">{balances.SCL_Balance || 0}</p>
+          </div>
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-pink-500">
+            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Maternity (ML)</p>
+            <p className="text-2xl font-black text-gray-800 mt-1">{balances.ML_Balance || 0}</p>
+          </div>
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-500">
+            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Paternity (PL)</p>
+            <p className="text-2xl font-black text-gray-800 mt-1">{balances.PL_Balance || 0}</p>
           </div>
         </div>
 
@@ -178,10 +200,14 @@ export default function LeaveDashboard() {
                   <select 
                     required value={formData.leaveType} 
                     onChange={(e) => setFormData({...formData, leaveType: e.target.value})}
-                    className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                    className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-medium"
                   >
                     <option value="">-- Select Type --</option>
-                    {rules.map((r, idx) => <option key={idx} value={r.LeaveCode}>{r.LeaveCode}</option>)}
+                    {availableRules.length === 0 && <option disabled>No leaves applicable for your post.</option>}
+                    {/* Maps over availableRules instead of all rules */}
+                    {availableRules.map((r, idx) => (
+                      <option key={idx} value={r.LeaveCode}>{r.LeaveCode} - {r.MarathiName}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -194,6 +220,27 @@ export default function LeaveDashboard() {
                     className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                   />
                 </div>
+
+                {/* Info Box showing Marathi Name and Description dynamically */}
+                {activeRule && (
+                  <div className="md:col-span-2 bg-indigo-50 p-4 rounded-lg border border-indigo-200">
+                    <h4 className="text-sm font-bold text-indigo-900 mb-1">{activeRule.MarathiName} Information</h4>
+                    <p className="text-sm text-indigo-700 mb-2">
+                      {activeRule.Description || 'Please select dates according to the leave rules.'}
+                    </p>
+                    <div className="flex flex-wrap gap-3 text-xs text-indigo-800 font-medium">
+                      <span className="bg-white px-2 py-1 rounded border border-indigo-100">
+                        Max Continuous Days: {activeRule.MaxContinuousDays || 'No limit'}
+                      </span>
+                      <span className="bg-white px-2 py-1 rounded border border-indigo-100">
+                        Medical Cert Required: {activeRule.RequiresMedicalCert}
+                      </span>
+                      <span className="bg-white px-2 py-1 rounded border border-indigo-100">
+                        Charge Handover Required: {activeRule.RequiresChargeHandover}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Start Date</label>

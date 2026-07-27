@@ -10,11 +10,33 @@ const extractId = (urlOrId) => {
   return urlOrId;
 };
 
+// --- Date Formatters ---
+const formatDateTime = (isoString) => {
+  if (!isoString) return 'N/A';
+  const d = new Date(isoString);
+  return d.toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+};
+
+const formatDateOnly = (isoString) => {
+  if (!isoString) return 'N/A';
+  const d = new Date(isoString);
+  return d.toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric'
+  });
+};
+
 export default function AdminLeaveApprovals() {
   const { currentUser } = useContext(AuthContext);
   const [leaves, setLeaves] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('Pending'); // 'Pending', 'Approved', 'Rejected', 'All'
+  const [filter, setFilter] = useState('Pending'); 
+
+  // States to hold the fetched balances for each user
+  const [employeeBalances, setEmployeeBalances] = useState({});
+  const [loadingBalances, setLoadingBalances] = useState({});
 
   const fetchLeaves = async () => {
     setLoading(true);
@@ -31,6 +53,19 @@ export default function AdminLeaveApprovals() {
   useEffect(() => {
     fetchLeaves();
   }, []);
+
+  // --- Fetch Balances On Demand (No backend changes needed!) ---
+  const fetchBalanceForUser = async (employeeName) => {
+    setLoadingBalances(prev => ({ ...prev, [employeeName]: true }));
+    try {
+      const bal = await gasApi('getLeaveBalances', { employeeName: employeeName });
+      setEmployeeBalances(prev => ({ ...prev, [employeeName]: bal }));
+    } catch (err) {
+      Swal.fire('Error', `Could not fetch balances for ${employeeName}`, 'error');
+    } finally {
+      setLoadingBalances(prev => ({ ...prev, [employeeName]: false }));
+    }
+  };
 
   const handleAction = async (applicationId, actionType) => {
     const isApprove = actionType === 'Approved';
@@ -112,8 +147,8 @@ export default function AdminLeaveApprovals() {
             <table className="w-full text-left text-sm">
               <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
                 <tr>
-                  <th className="p-4 font-semibold">Applicant</th>
-                  <th className="p-4 font-semibold">Leave Details</th>
+                  <th className="p-4 font-semibold w-1/3">Applicant & Balances</th>
+                  <th className="p-4 font-semibold w-1/4">Leave Details</th>
                   <th className="p-4 font-semibold">Charge & Docs</th>
                   <th className="p-4 font-semibold">Status</th>
                   <th className="p-4 font-semibold text-right">Actions</th>
@@ -127,17 +162,41 @@ export default function AdminLeaveApprovals() {
                     <tr key={row.ApplicationID} className="hover:bg-gray-50 transition">
                       <td className="p-4">
                         <p className="font-bold text-gray-900">{row.EmployeeName}</p>
-                        <p className="text-xs text-gray-500">ID: {row.EmployeeID}</p>
-                        <p className="text-xs text-gray-400 mt-1">App ID: {row.ApplicationID}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">Applied: {formatDateTime(row.Timestamp)}</p>
+                        <p className="text-[11px] text-gray-400">App ID: {row.ApplicationID}</p>
+                        
+                        {/* Interactive Balance Viewer */}
+                        <div className="mt-2.5">
+                          {employeeBalances[row.EmployeeName] ? (
+                            <div className="bg-indigo-50 border border-indigo-100 p-2 rounded-md text-[11px] font-bold text-indigo-800 grid grid-cols-3 gap-x-2 gap-y-1 w-fit">
+                              <span>CL: {employeeBalances[row.EmployeeName].CL_Balance || 0}</span>
+                              <span>EL: {employeeBalances[row.EmployeeName].EL_Balance || 0}</span>
+                              <span>HPL: {employeeBalances[row.EmployeeName].HPL_Balance || 0}</span>
+                              <span>ML: {employeeBalances[row.EmployeeName].ML_Balance || 0}</span>
+                              <span>PL: {employeeBalances[row.EmployeeName].PL_Balance || 0}</span>
+                              <span>SCL: {employeeBalances[row.EmployeeName].SCL_Balance || 0}</span>
+                            </div>
+                          ) : (
+                            <button 
+                              onClick={() => fetchBalanceForUser(row.EmployeeName)}
+                              disabled={loadingBalances[row.EmployeeName]}
+                              className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded transition"
+                            >
+                              {loadingBalances[row.EmployeeName] ? 'Loading...' : '👁️ View Balances'}
+                            </button>
+                          )}
+                        </div>
                       </td>
-                      <td className="p-4">
+                      <td className="p-4 align-top">
                         <p className="font-bold text-indigo-600">{row.LeaveType} ({row.TotalDays} Days)</p>
-                        <p className="text-xs text-gray-600">{row.StartDate} to {row.EndDate}</p>
-                        <p className="text-xs text-gray-500 italic mt-1 max-w-xs truncate">"{row.Reason}"</p>
+                        <p className="text-xs text-gray-700 font-medium mt-1">
+                          {formatDateOnly(row.StartDate)} <span className="text-gray-400">to</span> {formatDateOnly(row.EndDate)}
+                        </p>
+                        <p className="text-xs text-gray-500 italic mt-1.5 max-w-xs truncate border-l-2 border-gray-300 pl-2">"{row.Reason}"</p>
                       </td>
-                      <td className="p-4">
+                      <td className="p-4 align-top">
                         {row.ChargeHandedTo && row.ChargeHandedTo !== 'N/A' && (
-                          <span className="block text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-1 rounded w-fit mb-1 border border-amber-200">
+                          <span className="block text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-1 rounded w-fit mb-1.5 border border-amber-200">
                             Charge: {row.ChargeHandedTo}
                           </span>
                         )}
@@ -145,38 +204,41 @@ export default function AdminLeaveApprovals() {
                           <a 
                             href={`https://drive.google.com/file/d/${extractId(row.MedicalCertID)}/view`} 
                             target="_blank" rel="noreferrer"
-                            className="text-xs font-medium text-blue-600 hover:underline"
+                            className="text-[11px] font-bold text-blue-600 hover:underline bg-blue-50 px-2 py-1 rounded border border-blue-100 inline-block"
                           >
-                            View Medical Cert
+                            📄 View Medical Cert
                           </a>
                         )}
                       </td>
-                      <td className="p-4">
-                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                      <td className="p-4 align-top">
+                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider ${
                           row.Status === 'Approved' ? 'bg-green-100 text-green-700' :
                           row.Status === 'Rejected' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
                         }`}>
                           {row.Status}
                         </span>
                       </td>
-                      <td className="p-4 text-right">
+                      <td className="p-4 text-right align-top">
                         {row.Status === 'Pending' ? (
-                          <div className="flex justify-end gap-2">
+                          <div className="flex flex-col gap-2 items-end">
                             <button 
                               onClick={() => handleAction(row.ApplicationID, 'Approved')}
-                              className="bg-green-500 hover:bg-green-600 text-white px-3 py-1.5 rounded-lg font-medium text-xs transition"
+                              className="bg-green-500 hover:bg-green-600 text-white px-3.5 py-1.5 rounded-lg font-bold text-xs transition w-24"
                             >
                               Approve
                             </button>
                             <button 
                               onClick={() => handleAction(row.ApplicationID, 'Rejected')}
-                              className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg font-medium text-xs transition"
+                              className="bg-red-500 hover:bg-red-600 text-white px-3.5 py-1.5 rounded-lg font-bold text-xs transition w-24"
                             >
                               Reject
                             </button>
                           </div>
                         ) : (
-                          <span className="text-gray-400 text-xs">Processed</span>
+                          <div className="text-gray-400 text-xs font-semibold text-right">
+                            <p>Processed</p>
+                            {row.ApprovedBy && <p className="text-[10px] mt-1 truncate max-w-[100px]">by {row.ApprovedBy}</p>}
+                          </div>
                         )}
                       </td>
                     </tr>

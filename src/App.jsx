@@ -1,22 +1,30 @@
 import React, { useState, useContext } from 'react';
 import { AuthProvider, AuthContext } from './context/AuthContext';
 import Login from './components/auth/Login';
+import HomeDashboard from './components/Dashboard/HomeDashboard';
 import StaffProfile from './components/Staff/StaffProfile';
 import InventoryDashboard from './components/Inventory/InventoryDashboard';
 import LeaveDashboard from './components/Leaves/LeaveDashboard';
 import StaffDashboard from './components/Staff/StaffDashboard';
 import AdminLeaveApprovals from './components/Leaves/AdminLeaveApprovals';
 import StudentOverview from './components/Students/StudentOverview';
-import MARDashboard from './components/Students/MARDashboard'; // <-- ADD THIS
+import MARDashboard from './components/Students/MARDashboard'; 
+
 // The main interface (only shown if logged in)
 function MainInterface() {
   const { currentUser, logout } = useContext(AuthContext);
-  const [activeTab, setActiveTab] = useState('student-dashboard');
+  
+  // UPDATED: Checks local memory first, defaults to 'home' if memory is empty
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('lastVisitedScreen') || 'home';
+  });
+  
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
-  // Helper to close dropdown when a link is clicked
+  // UPDATED: Saves the clicked tab to local memory
   const handleNavClick = (tabName) => {
     setActiveTab(tabName);
+    localStorage.setItem('lastVisitedScreen', tabName);
     setIsDropdownOpen(false);
   };
 
@@ -32,8 +40,8 @@ function MainInterface() {
             <i className="fa-solid fa-school text-xl text-white"></i>
           </div>
           <div>
-            <h1 className="text-lg md:text-xl font-black tracking-wider text-indigo-400 leading-tight">BeedSchool</h1>
-            <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider leading-tight">Management System</p>
+            <h1 className="text-lg md:text-xl font-black tracking-wider text-indigo-400 leading-tight">SMI</h1>
+            <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider leading-tight">School Monitoring Interface</p>
           </div>
         </div>
         
@@ -67,6 +75,11 @@ function MainInterface() {
                 </div>
 
                 <div className="px-2 space-y-1">
+                  {/* NEW: Dashboard Home Button at the top */}
+                  <button onClick={() => handleNavClick('home')} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center gap-3 ${activeTab === 'home' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}>
+                    <i className={`fa-solid fa-house w-5 text-center ${activeTab === 'home' ? 'text-indigo-600' : 'text-slate-400'}`}></i> Dashboard Home
+                  </button>
+
                   <button onClick={() => handleNavClick('staff')} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center gap-3 ${activeTab === 'staff' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}>
                     <i className={`fa-solid fa-user-tie w-5 text-center ${activeTab === 'staff' ? 'text-indigo-600' : 'text-slate-400'}`}></i> My Profile
                   </button>
@@ -89,10 +102,11 @@ function MainInterface() {
                   <button onClick={() => handleNavClick('student-dashboard')} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center gap-3 ${activeTab === 'student-dashboard' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}>
                     <i className={`fa-solid fa-graduation-cap w-5 text-center ${activeTab === 'student-dashboard' ? 'text-indigo-600' : 'text-slate-400'}`}></i> Student Dashboard
                   </button>
-                  {/* NEW MAR DASHBOARD BUTTON */}
-<button onClick={() => handleNavClick('mar-dashboard')} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center gap-3 ${activeTab === 'mar-dashboard' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}>
-  <i className={`fa-solid fa-pills w-5 text-center ${activeTab === 'mar-dashboard' ? 'text-indigo-600' : 'text-slate-400'}`}></i> MAR Desk (Medicines)
-</button>
+                  
+                  {/* MAR DASHBOARD BUTTON */}
+                  <button onClick={() => handleNavClick('mar-dashboard')} className={`w-full text-left px-3 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center gap-3 ${activeTab === 'mar-dashboard' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-50'}`}>
+                    <i className={`fa-solid fa-pills w-5 text-center ${activeTab === 'mar-dashboard' ? 'text-indigo-600' : 'text-slate-400'}`}></i> MEDICATION SCHEDULE
+                  </button>
                 </div>
 
                 <div className="px-2 mt-2 pt-2 border-t border-slate-100">
@@ -108,13 +122,15 @@ function MainInterface() {
 
       {/* Main Content Area (Scrolls independently of the header) */}
       <main className="flex-1 overflow-y-auto relative">
+        {/* NEW: Home Dashboard Render Logic */}
+        {activeTab === 'home' && <HomeDashboard />}
+        
         {activeTab === 'staff' && <StaffProfile email={currentUser.Email} />}
         {activeTab === 'inventory' && <InventoryDashboard />}
         {activeTab === 'leaves' && <LeaveDashboard />}
         {activeTab === 'directory' && <StaffDashboard />}
         {activeTab === 'leave-admin' && <AdminLeaveApprovals />}
         {activeTab === 'student-dashboard' && <StudentOverview />}
-        {/* NEW MAR RENDERER */}
         {activeTab === 'mar-dashboard' && <MARDashboard />}
       </main>
 

@@ -28,7 +28,7 @@ export default function Login() {
           <div className="w-16 h-16 bg-indigo-600 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-lg">
             <i className="fa-solid fa-graduation-cap text-3xl text-white"></i>
           </div>
-          <h1 className="text-2xl font-black text-slate-800 tracking-tight">BeedSchool</h1>
+          <h1 className="text-2xl font-black text-slate-800 tracking-tight">SMI</h1>
           <p className="text-sm text-slate-500 font-medium mt-1">Staff Portal Login</p>
         </div>
 

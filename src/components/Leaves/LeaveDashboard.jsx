@@ -3,6 +3,7 @@ import { AuthContext } from '../../context/AuthContext';
 import { gasApi } from '../../api/gasApi';
 import Swal from 'sweetalert2';
 
+// --- Utility: File to Base64 ---
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.readAsDataURL(file);
@@ -12,6 +13,26 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   };
   reader.onerror = (error) => reject(error);
 });
+
+// --- Date Formatter (Adds AM/PM formatting) ---
+const formatDateTime = (isoString) => {
+  if (!isoString) return 'N/A';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString; // Fallback if not a valid date string
+  return d.toLocaleString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+};
+
+const formatDateOnly = (isoString) => {
+  if (!isoString) return 'N/A';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString;
+  return d.toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric'
+  });
+};
 
 export default function LeaveDashboard() {
   const { currentUser } = useContext(AuthContext);
@@ -32,9 +53,15 @@ export default function LeaveDashboard() {
     leaveType: '', startDate: '', endDate: '', reason: '', chargeHandedTo: '', medicalCertFile: null
   });
 
-  const fetchData = async () => {
+  // Add an isBackground parameter (defaults to false)
+  const fetchData = async (isBackground = false) => {
     if (!currentUser) return;
-    setLoading(true);
+    
+    // ONLY show the blocking spinner if we have absolutely no data yet
+    if (!isBackground && history.length === 0) {
+      setLoading(true);
+    }
+
     try {
       const [balData, rulesData, historyData, staffData] = await Promise.all([
         gasApi('getLeaveBalances', { employeeName: currentUser.Name, employeeEmail: currentUser.Email }),
@@ -50,36 +77,52 @@ export default function LeaveDashboard() {
       const myLeaves = (historyData || []).filter(
         app => String(app.EmployeeName).trim() === String(currentUser.Name).trim()
       );
-      setHistory(myLeaves);
+      setHistory(myLeaves); // <--- React will instantly and silently update the UI here with live data!
+      
     } catch (error) {
-      Swal.fire('Error', 'Failed to load leave data.', 'error');
+      console.error('Background fetch failed', error);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
+    // 1. Fetch immediately on load
+    fetchData(); 
+
+    // 2. Optional: Automatically refresh data in the background every 30 seconds while they are on the page!
+    const intervalId = setInterval(() => {
+      fetchData(true); 
+    }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [currentUser]);
+
+  useEffect(() => {
     fetchData();
   }, [currentUser]);
 
-  // SMART FILTER: Only show leaves applicable to this specific employee's Post and Gender
+  // SMART FILTER: Filters both dropdown options AND balance cards based on Post & Gender
   const availableRules = useMemo(() => {
     if (!rules || !currentUser) return [];
     const userPost = (currentUser.Post || '').toLowerCase();
-    const userGender = (currentUser.Gender || '').toLowerCase(); // If you add Gender to Staff sheet later
+    const userGender = (currentUser.Gender || '').toLowerCase(); // Reads Gender from Staff sheet
 
     return rules.filter(r => {
-      // 1. Check if the leave is restricted by Post
       const allowedPosts = r.ApplicablePosts ? r.ApplicablePosts.toLowerCase() : 'all';
       const isPostAllowed = allowedPosts === 'all' || allowedPosts.includes(userPost);
 
-      // 2. Check if the leave is restricted by Gender (e.g., Maternity Leave)
       const allowedGender = r.GenderSpecific ? r.GenderSpecific.toLowerCase() : 'all';
-      const isGenderAllowed = allowedGender === 'all' || allowedGender === userGender || userGender === ''; // Defaults to allowed if gender isn't set in DB yet
+      const isGenderAllowed = allowedGender === 'all' || allowedGender === userGender || userGender === ''; 
 
       return isPostAllowed && isGenderAllowed;
     });
   }, [rules, currentUser]);
+
+  // Helper to check if a specific leave card should be rendered
+  const isLeaveApplicable = (leaveCode) => {
+    return availableRules.some(r => r.LeaveCode === leaveCode);
+  };
 
   const activeRule = useMemo(() => {
     return rules.find(r => r.LeaveCode === formData.leaveType) || null;
@@ -146,11 +189,15 @@ export default function LeaveDashboard() {
     <div className="p-6 bg-gray-50 min-h-screen">
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Header */}
+        {/* Header - Now prominently displaying the Designation/Post */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-xl shadow-sm border border-gray-200">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Leave Dashboard</h1>
-            <p className="text-sm text-gray-500">Welcome, {currentUser?.Name} ({currentUser?.Post || 'Staff'})</p>
+            <p className="text-sm font-medium text-gray-500 mt-1">
+              Welcome, <span className="text-indigo-600 font-bold">{currentUser?.Name}</span> 
+              <span className="mx-2 text-gray-300">|</span> 
+              Designation: <span className="text-gray-700">{currentUser?.Post || 'Staff'}</span>
+            </p>
           </div>
           <button 
             onClick={() => setShowForm(!showForm)}
@@ -160,32 +207,51 @@ export default function LeaveDashboard() {
           </button>
         </div>
 
-        {/* Extended Balance Cards Grid */}
+        {/* Dynamic Balance Cards Grid - Shows English + Marathi and filters based on Gender/Post */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-emerald-500">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Casual (CL)</p>
-            <p className="text-2xl font-black text-gray-800 mt-1">{balances.CL_Balance || 0}</p>
-          </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-blue-500">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Earned (EL)</p>
-            <p className="text-2xl font-black text-gray-800 mt-1">{balances.EL_Balance || 0}</p>
-          </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-amber-500">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Half Pay (HPL)</p>
-            <p className="text-2xl font-black text-gray-800 mt-1">{balances.HPL_Balance || 0}</p>
-          </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-purple-500">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Spl Casual (SCL)</p>
-            <p className="text-2xl font-black text-gray-800 mt-1">{balances.SCL_Balance || 0}</p>
-          </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-pink-500">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Maternity (ML)</p>
-            <p className="text-2xl font-black text-gray-800 mt-1">{balances.ML_Balance || 0}</p>
-          </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-500">
-            <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Paternity (PL)</p>
-            <p className="text-2xl font-black text-gray-800 mt-1">{balances.PL_Balance || 0}</p>
-          </div>
+          
+          {isLeaveApplicable('CL') && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-emerald-500">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Casual (नैमित्तिक)</p>
+              <p className="text-2xl font-black text-gray-800 mt-1">{balances.CL_Balance || 0}</p>
+            </div>
+          )}
+          
+          {(isLeaveApplicable('EL') || isLeaveApplicable('EL_Vacation') || isLeaveApplicable('EL_NonVacation')) && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-blue-500">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Earned (अर्जित)</p>
+              <p className="text-2xl font-black text-gray-800 mt-1">{balances.EL_Balance || 0}</p>
+            </div>
+          )}
+          
+          {isLeaveApplicable('HPL') && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-amber-500">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Half Pay (अर्ध वेतनी)</p>
+              <p className="text-2xl font-black text-gray-800 mt-1">{balances.HPL_Balance || 0}</p>
+            </div>
+          )}
+          
+          {isLeaveApplicable('SCL') && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-purple-500">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Spl Casual (विशेष)</p>
+              <p className="text-2xl font-black text-gray-800 mt-1">{balances.SCL_Balance || 0}</p>
+            </div>
+          )}
+          
+          {isLeaveApplicable('ML') && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-pink-500">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Maternity (प्रसूती)</p>
+              <p className="text-2xl font-black text-gray-800 mt-1">{balances.ML_Balance || 0}</p>
+            </div>
+          )}
+          
+          {isLeaveApplicable('PL') && (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-500">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Paternity (पितृत्व)</p>
+              <p className="text-2xl font-black text-gray-800 mt-1">{balances.PL_Balance || 0}</p>
+            </div>
+          )}
+
         </div>
 
         {/* Application Form */}
@@ -203,8 +269,7 @@ export default function LeaveDashboard() {
                     className="w-full p-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-medium"
                   >
                     <option value="">-- Select Type --</option>
-                    {availableRules.length === 0 && <option disabled>No leaves applicable for your post.</option>}
-                    {/* Maps over availableRules instead of all rules */}
+                    {availableRules.length === 0 && <option disabled>No leaves applicable for your post/gender.</option>}
                     {availableRules.map((r, idx) => (
                       <option key={idx} value={r.LeaveCode}>{r.LeaveCode} - {r.MarathiName}</option>
                     ))}
@@ -297,7 +362,7 @@ export default function LeaveDashboard() {
           </div>
         )}
 
-        {/* History Table */}
+        {/* History Table - Now with formatted AM/PM Dates */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
           <div className="p-4 border-b border-gray-200 bg-gray-50">
             <h2 className="text-lg font-bold text-gray-800">Leave History</h2>
@@ -318,10 +383,17 @@ export default function LeaveDashboard() {
                   <tr><td colSpan="5" className="p-8 text-center text-gray-500">No applications found.</td></tr>
                 ) : (
                   history.map((record, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50">
-                      <td className="p-4 font-medium">{record.ApplicationID}</td>
+                    <tr key={idx} className="hover:bg-gray-50 transition">
+                      <td className="p-4 font-medium text-gray-500">{record.ApplicationID}</td>
                       <td className="p-4 font-bold text-indigo-600">{record.LeaveType}</td>
-                      <td className="p-4 text-gray-600">{record.StartDate} to {record.EndDate}</td>
+                      <td className="p-4">
+                        <span className="block text-gray-700 font-medium">
+                          {formatDateOnly(record.StartDate)} - {formatDateOnly(record.EndDate)}
+                        </span>
+                        <span className="block text-[10px] text-gray-400 mt-0.5">
+                          Applied: {formatDateTime(record.Timestamp)}
+                        </span>
+                      </td>
                       <td className="p-4">{record.TotalDays}</td>
                       <td className="p-4">
                         <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
